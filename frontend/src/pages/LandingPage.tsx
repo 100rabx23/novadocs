@@ -2,11 +2,10 @@ import { useState, useMemo } from 'react';
 import { 
   FileText, Heart, Trash2, Clock, Layout, ArrowRight,
   Pin, Archive, Search, Grid, List as ListIcon, Folder as FolderIcon, ChevronRight,
-  FolderPlus, FolderInput, RotateCcw, UploadCloud
+  FolderPlus, FolderInput, RotateCcw, UploadCloud, Database, Monitor
 } from 'lucide-react';
 import type { Document, Folder, TemplateId } from '../types';
 import { TEMPLATES } from '../templates/presets';
-import { useAuth } from '../context/AuthContext';
 
 interface LandingPageProps {
   documents: Document[];
@@ -22,6 +21,7 @@ interface LandingPageProps {
   onRenameFolder?: (folderId: string, name: string) => void;
   onDeleteFolder?: (folderId: string) => void;
   onShowToast?: (msg: string) => void;
+  onImportDoc?: (file: File, storeInCloud: boolean) => Promise<any>;
 }
 
 const CATEGORIES = ['All', 'Resume', 'Invoice', 'Report'];
@@ -39,9 +39,9 @@ export default function LandingPage({
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
-  onShowToast
+  onShowToast,
+  onImportDoc
 }: LandingPageProps) {
-  const { accessToken } = useAuth();
   
   // Dashboard Tabs: 'recent' | 'pinned' | 'shared' | 'archive' | 'trash'
   const [activeTab, setActiveTab] = useState<'recent' | 'pinned' | 'shared' | 'archive' | 'trash'>('recent');
@@ -59,6 +59,12 @@ export default function LandingPage({
   // Drag & Drop / Upload progress States
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+
+  // File Import states
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [storeInCloudChoice, setStoreInCloudChoice] = useState(true);
+  const [importing, setImporting] = useState(false);
 
   // Breadcrumbs calculation
   const breadcrumbs = useMemo(() => {
@@ -147,14 +153,7 @@ export default function LandingPage({
     setIsDraggingFile(false);
   };
 
-  const handleDropFile = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingFile(false);
-    
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length === 0) return;
-
-    const file = files[0];
+  const handleStartImportFlow = (file: File) => {
     const extension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
     const validExtensions = ['.docx', '.txt', '.md', '.html'];
 
@@ -162,6 +161,25 @@ export default function LandingPage({
       if (onShowToast) onShowToast('Unsupported file type. Drop .docx, .txt, .md or .html');
       return;
     }
+
+    setPendingFile(file);
+    setShowImportModal(true);
+    setStoreInCloudChoice(true); // default to cloud storage
+  };
+
+  const handleDropFile = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    handleStartImportFlow(files[0]);
+  };
+
+  const handleExecuteImport = async () => {
+    if (!pendingFile || !onImportDoc) return;
+    setImporting(true);
 
     // Simulate progress bar during upload
     setUploadProgress(10);
@@ -173,35 +191,34 @@ export default function LandingPage({
     }, 200);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      const res = await fetch(`${API_URL}/api/documents/import`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: formData
-      });
-
+      await onImportDoc(pendingFile, storeInCloudChoice);
       clearInterval(interval);
       setUploadProgress(100);
-
-      if (res.ok) {
-        const doc = await res.json();
-        if (onShowToast) onShowToast(`Imported ${file.name} successfully!`);
-        setTimeout(() => {
-          onSelectDoc(doc.id);
-        }, 300);
-      } else {
-        if (onShowToast) onShowToast('Import failed. Make sure server is running.');
+      if (onShowToast) {
+        onShowToast(`Imported ${pendingFile.name} successfully!`);
       }
+      setShowImportModal(false);
+      setPendingFile(null);
     } catch (e) {
       clearInterval(interval);
-      if (onShowToast) onShowToast('Network error during file import.');
+      if (onShowToast) {
+        onShowToast('Import failed. Make sure server is running.');
+      }
     } finally {
+      setImporting(false);
       setTimeout(() => setUploadProgress(null), 1000);
+    }
+  };
+
+  const handleTriggerFileInput = () => {
+    const input = document.getElementById('dashboard-file-import');
+    if (input) input.click();
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      handleStartImportFlow(files[0]);
     }
   };
 
@@ -337,6 +354,20 @@ export default function LandingPage({
             </div>
 
             <div className="flex items-center gap-2">
+              <button 
+                onClick={handleTriggerFileInput}
+                className="flex items-center gap-1 text-[11px] font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 py-1.5 px-3 rounded-lg hover:opacity-90 cursor-pointer"
+              >
+                <FolderInput size={12} />
+                <span>Import File</span>
+              </button>
+              <input 
+                type="file"
+                id="dashboard-file-import"
+                className="hidden"
+                accept=".docx,.txt,.md,.html"
+                onChange={handleFileInputChange}
+              />
               <button 
                 onClick={handleCreateFolder}
                 className="flex items-center gap-1 text-[11px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/20 py-1.5 px-3 rounded-lg hover:opacity-90 cursor-pointer"
@@ -578,6 +609,86 @@ export default function LandingPage({
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+      {/* Import Settings & Choice Modal */}
+      {showImportModal && pendingFile && (
+        <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-5 select-none animate-in fade-in zoom-in-95 duration-200">
+            <div>
+              <h3 className="font-heading font-extrabold text-base text-slate-800 dark:text-white">
+                Import Document
+              </h3>
+              <p className="text-xs text-slate-400 mt-1 truncate">
+                Configure import settings for <span className="font-semibold text-slate-600 dark:text-slate-200">{pendingFile.name}</span>
+              </p>
+            </div>
+
+            {uploadProgress !== null ? (
+              // Progress Loading UI
+              <div className="py-6 flex flex-col items-center justify-center gap-3">
+                <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden relative">
+                  <div 
+                    className="bg-blue-600 h-full transition-all duration-300 rounded-full"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 animate-pulse">
+                  {uploadProgress < 100 ? 'Uploading and parsing file contents...' : 'Finished!'}
+                </span>
+              </div>
+            ) : (
+              // Configuration Choices
+              <div className="flex flex-col gap-3">
+                {/* Option 1: Store in cloud */}
+                <div 
+                  onClick={() => setStoreInCloudChoice(true)}
+                  className={`border-2 rounded-xl p-4 flex gap-3.5 cursor-pointer transition-all ${storeInCloudChoice ? 'border-blue-600 bg-blue-50/20 dark:bg-blue-950/10' : 'border-slate-200 dark:border-slate-800 hover:border-slate-350'}`}
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${storeInCloudChoice ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                    <Database size={16} />
+                  </div>
+                  <div className="flex-1 flex flex-col">
+                    <span className="text-xs font-bold text-slate-800 dark:text-white">Save & Sync (Cloud Storage)</span>
+                    <span className="text-[10px] text-slate-400 leading-normal mt-0.5">Upload to the cloud database. Work is fully synchronized across your devices.</span>
+                  </div>
+                </div>
+
+                {/* Option 2: Edit locally only */}
+                <div 
+                  onClick={() => setStoreInCloudChoice(false)}
+                  className={`border-2 rounded-xl p-4 flex gap-3.5 cursor-pointer transition-all ${!storeInCloudChoice ? 'border-blue-600 bg-blue-50/20 dark:bg-blue-950/10' : 'border-slate-200 dark:border-slate-800 hover:border-slate-350'}`}
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${!storeInCloudChoice ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                    <Monitor size={16} />
+                  </div>
+                  <div className="flex-1 flex flex-col">
+                    <span className="text-xs font-bold text-slate-800 dark:text-white">Edit Locally (Temporary Session)</span>
+                    <span className="text-[10px] text-slate-400 leading-normal mt-0.5">Parse contents in-browser. Progress is kept in temporary memory without uploading to servers.</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {uploadProgress === null && (
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 dark:border-slate-850 pt-4">
+                <button 
+                  onClick={() => { setShowImportModal(false); setPendingFile(null); }}
+                  disabled={importing}
+                  className="px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleExecuteImport}
+                  disabled={importing}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-md flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <span>Import & Open</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

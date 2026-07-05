@@ -63,6 +63,19 @@ export class DocController {
     );
   }
 
+  @Post('parse')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  async parseFile(
+    @UploadedFile() file: any,
+  ) {
+    return this.docService.parseDocument(
+      file.buffer,
+      file.originalname,
+      file.mimetype
+    );
+  }
+
   // 3. CORE DOCUMENTS ENDPOINTS
   @Post()
   @UseGuards(JwtAuthGuard)

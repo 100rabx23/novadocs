@@ -40,6 +40,7 @@ export default function App() {
     deleteFolder,
     moveDocToFolder,
     closeEditor,
+    importDocument,
     
     // Comments
     comments,
@@ -251,6 +252,7 @@ export default function App() {
             onOpenAbout={() => setShowAbout(true)}
             onOpenTemplates={() => setShowTemplatesGallery(true)}
             isOnline={isOnline}
+            onImportDoc={importDocument}
           />
         )}
 
@@ -334,6 +336,7 @@ export default function App() {
               onRenameFolder={renameFolder}
               onDeleteFolder={deleteFolder}
               onShowToast={(msg) => showToast(msg)}
+              onImportDoc={importDocument}
             />
           )}
         </main>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { 
   Plus, FileText, Layout, Settings, Info, Hash, Trash2, Heart, Folder as FolderIcon,
-  ChevronDown, ChevronRight, Pin, Cloud, HardDrive, FolderPlus
+  ChevronDown, ChevronRight, Pin, Cloud, HardDrive, FolderPlus, FolderInput, Database, Monitor
 } from 'lucide-react';
 import type { Document, Folder, TemplateId } from '../../types';
 
@@ -24,6 +24,7 @@ interface DocumentSidebarProps {
   onOpenAbout: () => void;
   onOpenTemplates: () => void;
   isOnline?: boolean;
+  onImportDoc?: (file: File, storeInCloud: boolean) => Promise<any>;
 }
 
 export default function DocumentSidebar({
@@ -40,10 +41,18 @@ export default function DocumentSidebar({
   onOpenAbout,
   onOpenTemplates,
   isOnline = true,
+  onImportDoc,
 }: DocumentSidebarProps) {
   // Navigation lists expansion
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [showFoldersTree, setShowFoldersTree] = useState(true);
+
+  // File Import states
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [storeInCloudChoice, setStoreInCloudChoice] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   // Toggle Folder expansion state
   const toggleFolderExpand = (folderId: string, e: React.MouseEvent) => {
@@ -69,6 +78,59 @@ export default function DocumentSidebar({
     const name = window.prompt('Enter folder name:');
     if (name && onCreateFolder) {
       onCreateFolder(name);
+    }
+  };
+
+  const handleStartImportFlow = (file: File) => {
+    const extension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    const validExtensions = ['.docx', '.txt', '.md', '.html'];
+
+    if (!validExtensions.includes(extension)) {
+      alert('Unsupported file type. Please upload .docx, .txt, .md, or .html');
+      return;
+    }
+
+    setPendingFile(file);
+    setShowImportModal(true);
+    setStoreInCloudChoice(true);
+  };
+
+  const handleTriggerFileInput = () => {
+    const input = document.getElementById('sidebar-file-import');
+    if (input) input.click();
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      handleStartImportFlow(files[0]);
+    }
+  };
+
+  const handleExecuteImport = async () => {
+    if (!pendingFile || !onImportDoc) return;
+    setImporting(true);
+    setUploadProgress(10);
+
+    const interval = setInterval(() => {
+      setUploadProgress(prev => {
+        if (prev !== null && prev < 90) return prev + 20;
+        return prev;
+      });
+    }, 200);
+
+    try {
+      await onImportDoc(pendingFile, storeInCloudChoice);
+      clearInterval(interval);
+      setUploadProgress(100);
+      setShowImportModal(false);
+      setPendingFile(null);
+    } catch (e) {
+      clearInterval(interval);
+      alert('Import failed. Make sure server is running.');
+    } finally {
+      setImporting(false);
+      setTimeout(() => setUploadProgress(null), 1000);
     }
   };
 
@@ -180,10 +242,11 @@ export default function DocumentSidebar({
           <span>New Document</span>
         </button>
         
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-1.5">
           <button
             onClick={onOpenTemplates}
-            className="flex items-center justify-center gap-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold py-2 rounded-xl transition-all text-xs cursor-pointer"
+            className="flex flex-col items-center justify-center gap-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold py-2 rounded-xl transition-all text-[10px] cursor-pointer"
+            title="Templates Catalog"
           >
             <Layout size={13} />
             <span>Templates</span>
@@ -191,12 +254,30 @@ export default function DocumentSidebar({
           
           <button
             onClick={handleCreateFolderClick}
-            className="flex items-center justify-center gap-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold py-2 rounded-xl transition-all text-xs cursor-pointer"
+            className="flex flex-col items-center justify-center gap-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold py-2 rounded-xl transition-all text-[10px] cursor-pointer"
+            title="Create Folder"
           >
             <FolderPlus size={13} />
             <span>Folder</span>
           </button>
+
+          <button
+            onClick={handleTriggerFileInput}
+            className="flex flex-col items-center justify-center gap-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold py-2 rounded-xl transition-all text-[10px] cursor-pointer"
+            title="Import Local File"
+          >
+            <FolderInput size={13} />
+            <span>Import</span>
+          </button>
         </div>
+        
+        <input 
+          type="file"
+          id="sidebar-file-import"
+          className="hidden"
+          accept=".docx,.txt,.md,.html"
+          onChange={handleFileInputChange}
+        />
       </div>
 
       <div className="h-[1px] bg-slate-200 dark:bg-slate-800 mx-4" />
@@ -361,6 +442,82 @@ export default function DocumentSidebar({
           </button>
         </div>
       </div>
+      {/* Import Choice Modal */}
+      {showImportModal && pendingFile && (
+        <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-5 select-none text-left">
+            <div>
+              <h3 className="font-heading font-extrabold text-base text-slate-800 dark:text-white">
+                Import Document
+              </h3>
+              <p className="text-xs text-slate-400 mt-1 truncate">
+                Configure import settings for <span className="font-semibold text-slate-600 dark:text-slate-200">{pendingFile.name}</span>
+              </p>
+            </div>
+
+            {uploadProgress !== null ? (
+              <div className="py-6 flex flex-col items-center justify-center gap-3">
+                <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden relative">
+                  <div 
+                    className="bg-blue-600 h-full transition-all duration-300 rounded-full"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 animate-pulse">
+                  {uploadProgress < 100 ? 'Uploading and parsing file contents...' : 'Finished!'}
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div 
+                  onClick={() => setStoreInCloudChoice(true)}
+                  className={`border-2 rounded-xl p-4 flex gap-3.5 cursor-pointer transition-all ${storeInCloudChoice ? 'border-blue-600 bg-blue-50/20 dark:bg-blue-950/10' : 'border-slate-200 dark:border-slate-800 hover:border-slate-350'}`}
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${storeInCloudChoice ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                    <Database size={16} />
+                  </div>
+                  <div className="flex-1 flex flex-col">
+                    <span className="text-xs font-bold text-slate-800 dark:text-white">Save & Sync (Cloud Storage)</span>
+                    <span className="text-[10px] text-slate-400 leading-normal mt-0.5">Upload to the cloud database. Work is fully synchronized across your devices.</span>
+                  </div>
+                </div>
+
+                <div 
+                  onClick={() => setStoreInCloudChoice(false)}
+                  className={`border-2 rounded-xl p-4 flex gap-3.5 cursor-pointer transition-all ${!storeInCloudChoice ? 'border-blue-600 bg-blue-50/20 dark:bg-blue-950/10' : 'border-slate-200 dark:border-slate-800 hover:border-slate-350'}`}
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${!storeInCloudChoice ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                    <Monitor size={16} />
+                  </div>
+                  <div className="flex-1 flex flex-col">
+                    <span className="text-xs font-bold text-slate-800 dark:text-white">Edit Locally (Temporary Session)</span>
+                    <span className="text-[10px] text-slate-400 leading-normal mt-0.5">Parse contents in-browser. Progress is kept in temporary memory without uploading to servers.</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {uploadProgress === null && (
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 dark:border-slate-850 pt-4">
+                <button 
+                  onClick={() => { setShowImportModal(false); setPendingFile(null); }}
+                  disabled={importing}
+                  className="px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-850/50 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleExecuteImport}
+                  disabled={importing}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-md flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <span>Import & Open</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

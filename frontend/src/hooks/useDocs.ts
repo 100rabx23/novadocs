@@ -609,6 +609,81 @@ export function useDocs(accessToken: string | null) {
     localStorage.setItem('novadocs_ordered_ids', JSON.stringify(newOrder.map(d => d.id)));
   }, []);
 
+  const importDocument = useCallback(async (file: File, storeInCloud: boolean) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const localId = `mock-doc-import-${Date.now()}`;
+
+    if (!storeInCloud) {
+      try {
+        const headers: any = {};
+        if (accessToken) {
+          headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+        const res = await fetch(`${API_URL}/api/documents/parse`, {
+          method: 'POST',
+          headers,
+          body: formData
+        });
+
+        if (res.ok) {
+          const parsed = await res.json();
+          const localDoc: Document = {
+            id: localId,
+            title: parsed.title,
+            content: parsed.content,
+            template: 'blank',
+            folderId: null,
+            favorite: false,
+            pinned: false,
+            archived: false,
+            trash: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+
+          const updatedDocs = [localDoc, ...documents];
+          setDocuments(updatedDocs);
+          localStorage.setItem(LOCAL_DOCS_KEY, JSON.stringify(updatedDocs));
+          setActiveDocId(localId);
+          return localDoc;
+        } else {
+          throw new Error('Failed to parse file');
+        }
+      } catch (e) {
+        console.error('Local parsing failed:', e);
+        throw e;
+      }
+    } else {
+      try {
+        const headers: any = {};
+        if (accessToken) {
+          headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+        const res = await fetch(`${API_URL}/api/documents/import`, {
+          method: 'POST',
+          headers,
+          body: formData
+        });
+
+        if (res.ok) {
+          const doc = await res.json();
+          const updatedDocs = [doc, ...documents];
+          setDocuments(updatedDocs);
+          localStorage.setItem(LOCAL_DOCS_KEY, JSON.stringify(updatedDocs));
+          setActiveDocId(doc.id);
+          return doc;
+        } else {
+          throw new Error('Import failed');
+        }
+      } catch (e) {
+        console.error('Import failed:', e);
+        throw e;
+      }
+    }
+  }, [accessToken, documents]);
+
   return {
     documents,
     folders,
@@ -616,6 +691,7 @@ export function useDocs(accessToken: string | null) {
     activeDocId,
     setActiveDocId,
     createDocument,
+    importDocument,
     updateTitle,
     updateContent,
     deleteDocument,

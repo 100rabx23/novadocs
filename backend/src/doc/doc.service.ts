@@ -413,4 +413,32 @@ export class DocService {
 
     return this.create(userId, title, content);
   }
+
+  // Parse document content without storing it in the database
+  async parseDocument(fileBuffer: Buffer, originalName: string, mimeType: string) {
+    let content = '';
+    const title = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+
+    if (mimeType.includes('officedocument.wordprocessingml') || originalName.endsWith('.docx')) {
+      const result = await mammoth.convertToHtml({ buffer: fileBuffer });
+      content = result.value;
+    } else if (originalName.endsWith('.md') || mimeType.includes('markdown')) {
+      const mdText = fileBuffer.toString('utf-8');
+      content = mdText.split('\n').map(line => {
+        if (line.startsWith('# ')) return `<h1>${line.substring(2)}</h1>`;
+        if (line.startsWith('## ')) return `<h2>${line.substring(3)}</h2>`;
+        if (line.startsWith('### ')) return `<h3>${line.substring(4)}</h3>`;
+        if (line.trim() === '') return '<br/>';
+        return `<p>${line}</p>`;
+      }).join('\n');
+    } else if (originalName.endsWith('.txt') || mimeType.includes('plain')) {
+      content = fileBuffer.toString('utf-8').split('\n').map(l => `<p>${l}</p>`).join('');
+    } else if (originalName.endsWith('.html') || mimeType.includes('html')) {
+      content = fileBuffer.toString('utf-8');
+    } else {
+      throw new BadRequestException('Unsupported document file format for parsing');
+    }
+
+    return { title, content };
+  }
 }
