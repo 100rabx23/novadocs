@@ -5,11 +5,34 @@ import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { json, urlencoded } from 'express';
 
+function validateEnvVariables(config: ConfigService) {
+  const required = [
+    'DATABASE_URL',
+    'JWT_ACCESS_SECRET',
+    'JWT_REFRESH_SECRET',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_CLIENT_EMAIL',
+    'FIREBASE_PRIVATE_KEY',
+    'FRONTEND_URL',
+    'GOOGLE_CLIENT_ID',
+    'GOOGLE_CLIENT_SECRET',
+  ];
+  const missing = required.filter(key => !config.get<string>(key));
+  if (missing.length > 0) {
+    const errorMsg = `CRITICAL CONFIGURATION ERROR: Missing required environment variables:\n` +
+                     missing.map(key => `- ${key}`).join('\n') + 
+                     `\nPlease configure these variables in your Vercel Dashboard or local .env file.`;
+    console.error(errorMsg);
+    throw new Error(errorMsg);
+  }
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ limit: '50mb', extended: true }));
   const configService = app.get(ConfigService);
+  validateEnvVariables(configService);
 
   // Set global prefix for api routes
   app.setGlobalPrefix('api');

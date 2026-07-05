@@ -7,17 +7,37 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import * as jwt from 'jsonwebtoken';
+import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 
 @Injectable()
 export class AuthService {
   private appleKeysCache: { keys: any[]; expiry: number } | null = null;
-  private firebaseCertsCache: { certs: Record<string, string>; expiry: number } | null = null;
 
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) {}
+  ) {
+    if (!getApps().length) {
+      const projectId = this.configService.get<string>('FIREBASE_PROJECT_ID');
+      const clientEmail = this.configService.get<string>('FIREBASE_CLIENT_EMAIL');
+      const privateKey = this.configService.get<string>('FIREBASE_PRIVATE_KEY');
+
+      if (projectId && clientEmail && privateKey) {
+        initializeApp({
+          credential: cert({
+            projectId,
+            clientEmail,
+            privateKey: privateKey.replace(/\\n/g, '\n'),
+          }),
+        });
+        console.log('Firebase Admin SDK initialized successfully.');
+      } else {
+        console.warn('Firebase Admin SDK credentials missing or incomplete in config. Token verification will fail.');
+      }
+    }
+  }
 
   private async getApplePublicKey(kid: string): Promise<string> {
     const now = Date.now();
@@ -40,28 +60,6 @@ export class AuthService {
 
     const publicKey = crypto.createPublicKey({ key: jwk, format: 'jwk' });
     return publicKey.export({ type: 'spki', format: 'pem' }) as string;
-  }
-
-  private async getFirebasePublicKey(kid: string): Promise<string> {
-    const now = Date.now();
-    if (!this.firebaseCertsCache || this.firebaseCertsCache.expiry < now) {
-      const response = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com');
-      if (!response.ok) {
-        throw new Error('Failed to fetch Firebase public certificates');
-      }
-      const certs = await response.json();
-      this.firebaseCertsCache = {
-        certs,
-        expiry: now + 12 * 60 * 60 * 1000,
-      };
-    }
-
-    const cert = this.firebaseCertsCache.certs[kid];
-    if (!cert) {
-      throw new Error('Firebase public key cert not found for kid');
-    }
-
-    return cert;
   }
 
   // Sign up a user locally
@@ -460,23 +458,10 @@ export class AuthService {
     });
   }
 
-  // Verify Firebase ID Token using Google public keys
+  // Verify Firebase ID Token using Firebase Admin SDK
   async verifyFirebaseToken(idToken: string): Promise<any> {
     try {
-      const decoded = jwt.decode(idToken, { complete: true }) as any;
-      if (!decoded || !decoded.header || !decoded.header.kid) {
-        throw new UnauthorizedException('Invalid Firebase token format');
-      }
-
-      const signingKey = await this.getFirebasePublicKey(decoded.header.kid);
-      const firebaseProjectId = this.configService.get<string>('FIREBASE_PROJECT_ID') || 'novadocs-8af56';
-
-      const verifiedPayload = jwt.verify(idToken, signingKey, {
-        audience: firebaseProjectId,
-        issuer: `https://securetoken.google.com/${firebaseProjectId}`,
-        algorithms: ['RS256'],
-      }) as any;
-
+      const verifiedPayload = await getAuth().verifyIdToken(idToken);
       return verifiedPayload;
     } catch (e: any) {
       throw new UnauthorizedException(e.message || 'Firebase Token Verification failed');
