@@ -15,12 +15,24 @@ import {
 } from 'docx';
 import { saveAs } from 'file-saver';
 
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binaryString = window.atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
 // Helper to convert an image URL (including base64) to ArrayBuffer
 async function fetchImageBuffer(url: string): Promise<ArrayBuffer | null> {
   try {
     if (url.startsWith('data:')) {
-      const response = await fetch(url);
-      return await response.arrayBuffer();
+      const parts = url.split(',');
+      if (parts.length > 1) {
+        return base64ToArrayBuffer(parts[1]);
+      }
     }
     // Fallback/standard image fetch
     const response = await fetch(url);
@@ -60,7 +72,8 @@ export async function exportToDocx(title: string, htmlContent: string) {
     currentRuns: any[] = [], 
     styles: { bold?: boolean; italics?: boolean; underline?: boolean; strike?: boolean; color?: string } = {},
     isList: boolean = false, 
-    listType: 'bullet' | 'ordered' = 'bullet'
+    listType: 'bullet' | 'ordered' = 'bullet',
+    targetBlocks: any[] = children
   ): Promise<any[]> {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent || '';
@@ -87,28 +100,28 @@ export async function exportToDocx(title: string, htmlContent: string) {
     // Inline formatting tags
     if (tagName === 'strong' || tagName === 'b') {
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, currentRuns, { ...styles, bold: true }, isList, listType);
+        await parseElement(child, currentRuns, { ...styles, bold: true }, isList, listType, targetBlocks);
       }
       return currentRuns;
     }
 
     if (tagName === 'em' || tagName === 'i') {
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, currentRuns, { ...styles, italics: true }, isList, listType);
+        await parseElement(child, currentRuns, { ...styles, italics: true }, isList, listType, targetBlocks);
       }
       return currentRuns;
     }
 
     if (tagName === 'u') {
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, currentRuns, { ...styles, underline: true }, isList, listType);
+        await parseElement(child, currentRuns, { ...styles, underline: true }, isList, listType, targetBlocks);
       }
       return currentRuns;
     }
 
     if (tagName === 's' || tagName === 'strike' || tagName === 'del') {
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, currentRuns, { ...styles, strike: true }, isList, listType);
+        await parseElement(child, currentRuns, { ...styles, strike: true }, isList, listType, targetBlocks);
       }
       return currentRuns;
     }
@@ -120,7 +133,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
         newStyles.color = textStyles.color;
       }
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, currentRuns, newStyles, isList, listType);
+        await parseElement(child, currentRuns, newStyles, isList, listType, targetBlocks);
       }
       return currentRuns;
     }
@@ -141,7 +154,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
     if (tagName === 'p') {
       const runs: any[] = [];
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, runs, styles);
+        await parseElement(child, runs, styles, false, 'bullet', targetBlocks);
       }
       
       let alignment: any = AlignmentType.LEFT;
@@ -149,7 +162,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
       if (element.style.textAlign === 'right') alignment = AlignmentType.RIGHT;
       if (element.style.textAlign === 'justify') alignment = AlignmentType.JUSTIFIED;
 
-      children.push(
+      targetBlocks.push(
         new Paragraph({
           children: runs,
           alignment,
@@ -162,7 +175,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
     if (tagName === 'h1' || tagName === 'h2' || tagName === 'h3' || tagName === 'h4') {
       const runs: any[] = [];
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, runs, styles);
+        await parseElement(child, runs, styles, false, 'bullet', targetBlocks);
       }
       
       let heading: any = HeadingLevel.HEADING_1;
@@ -170,7 +183,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
       if (tagName === 'h3') heading = HeadingLevel.HEADING_3;
       if (tagName === 'h4') heading = HeadingLevel.HEADING_4;
 
-      children.push(
+      targetBlocks.push(
         new Paragraph({
           children: runs,
           heading,
@@ -183,9 +196,9 @@ export async function exportToDocx(title: string, htmlContent: string) {
     if (tagName === 'blockquote') {
       const runs: any[] = [];
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, runs, styles);
+        await parseElement(child, runs, styles, false, 'bullet', targetBlocks);
       }
-      children.push(
+      targetBlocks.push(
         new Paragraph({
           children: runs,
           spacing: { before: 120, after: 120 },
@@ -197,14 +210,14 @@ export async function exportToDocx(title: string, htmlContent: string) {
 
     if (tagName === 'ul') {
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, [], styles, true, 'bullet');
+        await parseElement(child, [], styles, true, 'bullet', targetBlocks);
       }
       return [];
     }
 
     if (tagName === 'ol') {
       for (const child of Array.from(element.childNodes)) {
-        await parseElement(child, [], styles, true, 'ordered');
+        await parseElement(child, [], styles, true, 'ordered', targetBlocks);
       }
       return [];
     }
@@ -222,10 +235,10 @@ export async function exportToDocx(title: string, htmlContent: string) {
       for (const child of Array.from(element.childNodes)) {
         // Skip checkbox element since we manually added it
         if (child.nodeName.toLowerCase() === 'input') continue;
-        await parseElement(child, runs, styles, true, listType);
+        await parseElement(child, runs, styles, true, listType, targetBlocks);
       }
 
-      children.push(
+      targetBlocks.push(
         new Paragraph({
           children: runs,
           bullet: listType === 'bullet' ? { level: 0 } : undefined,
@@ -237,7 +250,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
     }
 
     if (tagName === 'hr') {
-      children.push(
+      targetBlocks.push(
         new Paragraph({
           border: {
             bottom: {
@@ -264,6 +277,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
         ) as HTMLElement[];
 
         for (const cell of cellElements) {
+          const cellParagraphs: any[] = [];
           const cellRuns: any[] = [];
           
           // Background color for cells
@@ -282,20 +296,14 @@ export async function exportToDocx(title: string, htmlContent: string) {
 
           // Parse children inside cell
           for (const childNode of Array.from(cell.childNodes)) {
-            // Note: cell element children can be text or other tags
-            const subRuns: any[] = [];
-            await parseElement(childNode, subRuns, styles);
-            if (subRuns.length > 0) {
-              cellRuns.push(...subRuns);
-            }
+            await parseElement(childNode, cellRuns, styles, false, 'bullet', cellParagraphs);
           }
 
           // Make sure we have a paragraph for cell content
-          const cellParagraphs = [];
-          if (cellRuns.length > 0) {
+          if (cellParagraphs.length === 0) {
+            cellParagraphs.push(new Paragraph({ children: cellRuns.length > 0 ? cellRuns : [new TextRun("")] }));
+          } else if (cellRuns.length > 0) {
             cellParagraphs.push(new Paragraph({ children: cellRuns }));
-          } else {
-            cellParagraphs.push(new Paragraph({ text: '' }));
           }
 
           cells.push(
@@ -328,7 +336,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
       }
 
       if (rows.length > 0) {
-        children.push(
+        targetBlocks.push(
           new DocxTable({
             rows: rows,
             width: {
@@ -361,7 +369,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
             width = 600;
           }
 
-          children.push(
+          targetBlocks.push(
             new Paragraph({
               children: [
                 new ImageRun({
@@ -383,7 +391,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
 
     // Default container parsing
     for (const child of Array.from(element.childNodes)) {
-      await parseElement(child, currentRuns, styles, isList, listType);
+      await parseElement(child, currentRuns, styles, isList, listType, targetBlocks);
     }
 
     return currentRuns;
@@ -391,7 +399,7 @@ export async function exportToDocx(title: string, htmlContent: string) {
 
   // Parse all top-level body nodes
   for (const child of Array.from(body.childNodes)) {
-    await parseElement(child);
+    await parseElement(child, [], {}, false, 'bullet', children);
   }
 
   // Fallback if empty
@@ -400,6 +408,53 @@ export async function exportToDocx(title: string, htmlContent: string) {
   }
 
   const docx = new DocxDocument({
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: 'Arial',
+            size: 22, // 11pt
+            color: '1E293B',
+          },
+          paragraph: {
+            spacing: { after: 120, line: 276 }, // 1.15 line spacing
+          }
+        },
+        heading1: {
+          run: {
+            font: 'Arial',
+            size: 32, // 16pt
+            bold: true,
+            color: '0F172A',
+          },
+          paragraph: {
+            spacing: { before: 240, after: 120 },
+          }
+        },
+        heading2: {
+          run: {
+            font: 'Arial',
+            size: 28, // 14pt
+            bold: true,
+            color: '1E293B',
+          },
+          paragraph: {
+            spacing: { before: 200, after: 100 },
+          }
+        },
+        heading3: {
+          run: {
+            font: 'Arial',
+            size: 24, // 12pt
+            bold: true,
+            color: '334155',
+          },
+          paragraph: {
+            spacing: { before: 160, after: 80 },
+          }
+        }
+      }
+    },
     numbering: {
       config: [
         {
