@@ -7,28 +7,61 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import * as jwt from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
 
 @Injectable()
 export class AuthService {
-  private appleClient: any;
-  private firebaseClient: any;
+  private appleKeysCache: { keys: any[]; expiry: number } | null = null;
+  private firebaseCertsCache: { certs: Record<string, string>; expiry: number } | null = null;
 
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) {
-    this.appleClient = jwksClient({
-      jwksUri: 'https://appleid.apple.com/auth/keys',
-      cache: true,
-      rateLimit: true,
-    });
-    this.firebaseClient = jwksClient({
-      jwksUri: 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
-      cache: true,
-      rateLimit: true,
-    });
+  ) {}
+
+  private async getApplePublicKey(kid: string): Promise<string> {
+    const now = Date.now();
+    if (!this.appleKeysCache || this.appleKeysCache.expiry < now) {
+      const response = await fetch('https://appleid.apple.com/auth/keys');
+      if (!response.ok) {
+        throw new Error('Failed to fetch Apple public keys');
+      }
+      const data = await response.json();
+      this.appleKeysCache = {
+        keys: data.keys,
+        expiry: now + 24 * 60 * 60 * 1000,
+      };
+    }
+
+    const jwk = this.appleKeysCache.keys.find((k: any) => k.kid === kid);
+    if (!jwk) {
+      throw new Error('Apple public key not found for kid');
+    }
+
+    const publicKey = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+    return publicKey.export({ type: 'spki', format: 'pem' }) as string;
+  }
+
+  private async getFirebasePublicKey(kid: string): Promise<string> {
+    const now = Date.now();
+    if (!this.firebaseCertsCache || this.firebaseCertsCache.expiry < now) {
+      const response = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com');
+      if (!response.ok) {
+        throw new Error('Failed to fetch Firebase public certificates');
+      }
+      const certs = await response.json();
+      this.firebaseCertsCache = {
+        certs,
+        expiry: now + 12 * 60 * 60 * 1000,
+      };
+    }
+
+    const cert = this.firebaseCertsCache.certs[kid];
+    if (!cert) {
+      throw new Error('Firebase public key cert not found for kid');
+    }
+
+    return cert;
   }
 
   // Sign up a user locally
@@ -102,13 +135,13 @@ export class AuthService {
         throw new UnauthorizedException('Invalid Apple token format');
       }
 
-      const key = await this.appleClient.getSigningKey(decoded.header.kid);
-      const signingKey = key.getPublicKey();
+      const signingKey = await this.getApplePublicKey(decoded.header.kid);
       
       const clientId = this.configService.get<string>('APPLE_CLIENT_ID') || 'com.novadocs.client';
       const verified = jwt.verify(idToken, signingKey, {
         issuer: 'https://appleid.apple.com',
         audience: clientId,
+        algorithms: ['RS256'],
       }) as any;
 
       return {
@@ -117,8 +150,8 @@ export class AuthService {
         displayName: verified.email ? verified.email.split('@')[0] : 'Apple User',
         avatar: null,
       };
-    } catch (e) {
-      throw new UnauthorizedException('Apple Token Verification failed');
+    } catch (e: any) {
+      throw new UnauthorizedException(e.message || 'Apple Token Verification failed');
     }
   }
 
@@ -429,38 +462,25 @@ export class AuthService {
 
   // Verify Firebase ID Token using Google public keys
   async verifyFirebaseToken(idToken: string): Promise<any> {
-    const firebaseProjectId = this.configService.get<string>('FIREBASE_PROJECT_ID') || 'novadocs-app';
-    
-    return new Promise((resolve, reject) => {
+    try {
       const decoded = jwt.decode(idToken, { complete: true }) as any;
       if (!decoded || !decoded.header || !decoded.header.kid) {
-        return reject(new UnauthorizedException('Invalid Firebase token format'));
+        throw new UnauthorizedException('Invalid Firebase token format');
       }
 
-      this.firebaseClient.getSigningKey(decoded.header.kid, (err: any, key: any) => {
-        if (err || !key) {
-          return reject(new UnauthorizedException('Failed to retrieve Firebase signing key'));
-        }
-        
-        const signingKey = key.getPublicKey();
-        
-        jwt.verify(
-          idToken,
-          signingKey,
-          {
-            audience: firebaseProjectId,
-            issuer: `https://securetoken.google.com/${firebaseProjectId}`,
-            algorithms: ['RS256'],
-          },
-          (verifyErr: any, verifiedPayload: any) => {
-            if (verifyErr || !verifiedPayload) {
-              return reject(new UnauthorizedException('Firebase Token Verification failed'));
-            }
-            resolve(verifiedPayload);
-          }
-        );
-      });
-    });
+      const signingKey = await this.getFirebasePublicKey(decoded.header.kid);
+      const firebaseProjectId = this.configService.get<string>('FIREBASE_PROJECT_ID') || 'novadocs-8af56';
+
+      const verifiedPayload = jwt.verify(idToken, signingKey, {
+        audience: firebaseProjectId,
+        issuer: `https://securetoken.google.com/${firebaseProjectId}`,
+        algorithms: ['RS256'],
+      }) as any;
+
+      return verifiedPayload;
+    } catch (e: any) {
+      throw new UnauthorizedException(e.message || 'Firebase Token Verification failed');
+    }
   }
 
   // Handle Sign In with Firebase ID Token
