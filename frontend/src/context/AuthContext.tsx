@@ -4,6 +4,8 @@ import {
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   signOut, 
   sendPasswordResetEmail,
   updateProfile,
@@ -44,6 +46,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Check Firebase Auth state on mount
   useEffect(() => {
+    // Check if there's a redirect sign-in result to process
+    getRedirectResult(auth).then(async (result) => {
+      if (result) {
+        try {
+          const idToken = await result.user.getIdToken();
+          const res = await fetch(`${API_URL}/api/auth/firebase`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: idToken }),
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            setUser(data.user);
+            setAccessToken(data.accessToken);
+            localStorage.setItem('novadocs_refresh_token', data.refreshToken);
+          }
+        } catch (err) {
+          console.error('Failed to login after Firebase redirect:', err);
+        }
+      }
+    }).catch((err) => {
+      console.error('Firebase redirect auth error:', err);
+    });
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         try {
@@ -134,8 +161,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let idToken = idTokenOverride;
     if (!idToken) {
       if (provider === 'google') {
-        const result = await signInWithPopup(auth, googleProvider);
-        idToken = await result.user.getIdToken();
+        try {
+          const result = await signInWithPopup(auth, googleProvider);
+          idToken = await result.user.getIdToken();
+        } catch (err: any) {
+          // Fallback if popups are blocked by browser settings
+          if (err.code === 'auth/popup-blocked') {
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          }
+          throw err;
+        }
       } else {
         throw new Error("Apple OAuth requires native credentials");
       }
