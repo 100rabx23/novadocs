@@ -1,0 +1,134 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id             String         @id @default(uuid())
+  email          String         @unique
+  passwordHash   String?        // Nullable for OAuth users
+  displayName    String?
+  avatar         String?        // URL/base64 avatar
+  provider       String         @default("email") // "email" | "google" | "apple"
+  providerId     String?
+  emailVerified  Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  documents      Document[]
+  sessions       Session[]
+  folders        Folder[]
+  versions       Version[]
+  shares         Share[]
+  comments       Comment[]
+  oauthAccounts  OAuthAccount[]
+  auditLogs      AuditLog[]
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  token        String   @unique // Refresh token
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt    DateTime
+  device       String?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+}
+
+model Folder {
+  id        String     @id @default(uuid())
+  name      String
+  parentId  String?
+  parent    Folder?    @relation("FolderToFolder", fields: [parentId], references: [id], onDelete: Cascade)
+  subfolders Folder[]   @relation("FolderToFolder")
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents Document[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model Document {
+  id        String     @id @default(uuid())
+  title     String
+  content   String
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId  String?
+  folder    Folder?    @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  favorite  Boolean    @default(false)
+  pinned    Boolean    @default(false)
+  archived  Boolean    @default(false)
+  trash     Boolean    @default(false)
+  template  String     @default("blank")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  versions  Version[]
+  shares    Share[]
+  comments  Comment[]
+}
+
+model Version {
+  id         String   @id @default(uuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  content    String
+  title      String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+}
+
+model Share {
+  id           String    @id @default(uuid())
+  documentId   String
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  sharedWithId String?
+  user         User?     @relation(fields: [sharedWithId], references: [id], onDelete: Cascade)
+  email        String?
+  role         String    @default("viewer") // "viewer" | "commenter" | "editor" | "owner"
+  isPublic     Boolean   @default(false)
+  passwordHash String?
+  expiresAt    DateTime?
+  token        String    @unique @default(uuid())
+  createdAt    DateTime  @default(now())
+}
+
+model Comment {
+  id         String   @id @default(uuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content    String
+  selection  String?  // HTML/JSON selector coordinate for annotation
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model OAuthAccount {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String    // "google" | "apple"
+  providerId   String
+  accessToken  String?
+  refreshToken String?
+  expiresAt    DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  details   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+}
