@@ -12,6 +12,7 @@ import jwksClient from 'jwks-rsa';
 @Injectable()
 export class AuthService {
   private appleClient: any;
+  private firebaseClient: any;
 
   constructor(
     private prisma: PrismaService,
@@ -20,6 +21,11 @@ export class AuthService {
   ) {
     this.appleClient = jwksClient({
       jwksUri: 'https://appleid.apple.com/auth/keys',
+      cache: true,
+      rateLimit: true,
+    });
+    this.firebaseClient = jwksClient({
+      jwksUri: 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
       cache: true,
       rateLimit: true,
     });
@@ -419,5 +425,114 @@ export class AuthService {
         createdAt: true,
       },
     });
+  }
+
+  // Verify Firebase ID Token using Google public keys
+  async verifyFirebaseToken(idToken: string): Promise<any> {
+    const firebaseProjectId = this.configService.get<string>('FIREBASE_PROJECT_ID') || 'novadocs-app';
+    
+    return new Promise((resolve, reject) => {
+      const decoded = jwt.decode(idToken, { complete: true }) as any;
+      if (!decoded || !decoded.header || !decoded.header.kid) {
+        return reject(new UnauthorizedException('Invalid Firebase token format'));
+      }
+
+      this.firebaseClient.getSigningKey(decoded.header.kid, (err: any, key: any) => {
+        if (err || !key) {
+          return reject(new UnauthorizedException('Failed to retrieve Firebase signing key'));
+        }
+        
+        const signingKey = key.getPublicKey();
+        
+        jwt.verify(
+          idToken,
+          signingKey,
+          {
+            audience: firebaseProjectId,
+            issuer: `https://securetoken.google.com/${firebaseProjectId}`,
+            algorithms: ['RS256'],
+          },
+          (verifyErr: any, verifiedPayload: any) => {
+            if (verifyErr || !verifiedPayload) {
+              return reject(new UnauthorizedException('Firebase Token Verification failed'));
+            }
+            resolve(verifiedPayload);
+          }
+        );
+      });
+    });
+  }
+
+  // Handle Sign In with Firebase ID Token
+  async handleFirebaseSignIn(idToken: string, requestInfo?: { device?: string; ipAddress?: string }) {
+    const payload = await this.verifyFirebaseToken(idToken);
+    const email = payload.email;
+    const providerId = payload.sub;
+    const displayName = payload.name || email.split('@')[0];
+    const avatar = payload.picture || null;
+    const emailVerified = !!payload.email_verified;
+
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email },
+          { providerId, provider: 'firebase' }
+        ]
+      }
+    });
+
+    if (!user) {
+      // Create user if they don't exist
+      user = await this.prisma.user.create({
+        data: {
+          email,
+          displayName,
+          avatar,
+          provider: 'firebase',
+          providerId,
+          emailVerified,
+        }
+      });
+      
+      // Save details to OAuthAccount
+      await this.prisma.oAuthAccount.create({
+        data: {
+          userId: user.id,
+          provider: 'firebase',
+          providerId,
+        }
+      });
+    } else {
+      // Link or update user info if needed
+      const dataToUpdate: any = {};
+      if (user.provider !== 'firebase') {
+        dataToUpdate.provider = 'firebase';
+        dataToUpdate.providerId = providerId;
+      }
+      if (avatar && !user.avatar) {
+        dataToUpdate.avatar = avatar;
+      }
+      if (emailVerified && !user.emailVerified) {
+        dataToUpdate.emailVerified = true;
+      }
+      if (Object.keys(dataToUpdate).length > 0) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: dataToUpdate
+        });
+      }
+    }
+
+    // Audit Log
+    await this.prisma.auditLog.create({
+      data: {
+        userId: user.id,
+        action: 'user_firebase_login',
+        details: JSON.stringify({ email }),
+        ipAddress: requestInfo?.ipAddress,
+      },
+    });
+
+    return this.login(user, requestInfo, false);
   }
 }

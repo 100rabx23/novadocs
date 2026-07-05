@@ -68,6 +68,19 @@ export class AuthController {
     return this.authService.handleOAuthSignIn('apple', token, { device: userAgent, ipAddress: ip });
   }
 
+  @Post('firebase')
+  @HttpCode(HttpStatus.OK)
+  async firebaseSignIn(
+    @Body('token') token: string,
+    @Ip() ip?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    if (!token) {
+      throw new BadRequestException('Firebase ID Token is required');
+    }
+    return this.authService.handleFirebaseSignIn(token, { device: userAgent, ipAddress: ip });
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(

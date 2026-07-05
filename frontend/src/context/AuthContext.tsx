@@ -1,4 +1,14 @@
 import { createContext, useContext, useState, useEffect } from 'react';
+import { auth, googleProvider } from '../lib/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signInWithPopup, 
+  signOut, 
+  sendPasswordResetEmail,
+  updateProfile,
+  onAuthStateChanged
+} from 'firebase/auth';
 
 interface User {
   id: string;
@@ -14,7 +24,7 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password?: string, rememberMe?: boolean) => Promise<void>;
   signup: (email: string, password?: string, displayName?: string) => Promise<void>;
-  oauthLogin: (provider: 'google' | 'apple', idToken: string) => Promise<void>;
+  oauthLogin: (provider: 'google' | 'apple', idToken?: string) => Promise<void>;
   logout: () => Promise<void>;
   logoutAllDevices: () => Promise<void>;
   forgotPassword: (email: string) => Promise<any>;
@@ -32,51 +42,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Check auth rotation on mount
+  // Check Firebase Auth state on mount
   useEffect(() => {
-    const refreshSession = async () => {
-      const storedRefreshToken = localStorage.getItem('novadocs_refresh_token');
-      if (!storedRefreshToken) {
-        setLoading(false);
-        return;
-      }
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const idToken = await firebaseUser.getIdToken();
+          const res = await fetch(`${API_URL}/api/auth/firebase`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: idToken }),
+          });
 
-      try {
-        const res = await fetch(`${API_URL}/api/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: storedRefreshToken }),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          setUser(data.user);
-          setAccessToken(data.accessToken);
-          localStorage.setItem('novadocs_refresh_token', data.refreshToken);
-        } else {
-          // Token expired or invalid
-          localStorage.removeItem('novadocs_refresh_token');
+          if (res.ok) {
+            const data = await res.json();
+            setUser(data.user);
+            setAccessToken(data.accessToken);
+            localStorage.setItem('novadocs_refresh_token', data.refreshToken);
+          } else {
+            localStorage.removeItem('novadocs_refresh_token');
+            setUser(null);
+            setAccessToken(null);
+          }
+        } catch (err) {
+          console.error('Failed to auto login with Firebase:', err);
         }
-      } catch (err) {
-        console.error('Failed to rotate token:', err);
-      } finally {
-        setLoading(false);
+      } else {
+        setUser(null);
+        setAccessToken(null);
+        localStorage.removeItem('novadocs_refresh_token');
       }
-    };
+      setLoading(false);
+    });
 
-    refreshSession();
+    return () => unsubscribe();
   }, []);
 
   const login = async (email: string, password?: string, rememberMe?: boolean) => {
-    const res = await fetch(`${API_URL}/api/auth/login`, {
+    if (!password) throw new Error('Password is required');
+    if (rememberMe) {
+      console.log('Remember me session persistence requested');
+    }
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    const idToken = await userCredential.user.getIdToken();
+
+    const res = await fetch(`${API_URL}/api/auth/firebase`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, rememberMe }),
+      body: JSON.stringify({ token: idToken }),
     });
 
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.message || 'Login failed');
+      throw new Error(err.message || 'Firebase login verification failed');
     }
 
     const data = await res.json();
@@ -86,23 +104,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signup = async (email: string, password?: string, displayName?: string) => {
-    const res = await fetch(`${API_URL}/api/auth/signup`, {
+    if (!password) throw new Error('Password is required');
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    
+    if (displayName) {
+      await updateProfile(userCredential.user, { displayName });
+    }
+    
+    const idToken = await userCredential.user.getIdToken();
+
+    const res = await fetch(`${API_URL}/api/auth/firebase`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, displayName }),
+      body: JSON.stringify({ token: idToken }),
     });
 
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.message || 'Registration failed');
+      throw new Error(err.message || 'Firebase signup verification failed');
     }
 
-    // Automatically login after signup
-    await login(email, password);
+    const data = await res.json();
+    setUser(data.user);
+    setAccessToken(data.accessToken);
+    localStorage.setItem('novadocs_refresh_token', data.refreshToken);
   };
 
-  const oauthLogin = async (provider: 'google' | 'apple', idToken: string) => {
-    const res = await fetch(`${API_URL}/api/auth/${provider}`, {
+  const oauthLogin = async (provider: 'google' | 'apple', idTokenOverride?: string) => {
+    let idToken = idTokenOverride;
+    if (!idToken) {
+      if (provider === 'google') {
+        const result = await signInWithPopup(auth, googleProvider);
+        idToken = await result.user.getIdToken();
+      } else {
+        throw new Error("Apple OAuth requires native credentials");
+      }
+    }
+
+    const res = await fetch(`${API_URL}/api/auth/firebase`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: idToken }),
@@ -120,6 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    await signOut(auth);
     const storedRefreshToken = localStorage.getItem('novadocs_refresh_token');
     if (storedRefreshToken) {
       try {
@@ -160,18 +200,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const forgotPassword = async (email: string) => {
-    const res = await fetch(`${API_URL}/api/auth/forgot-password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.message || 'Forgot password request failed');
-    }
-
-    return res.json();
+    await sendPasswordResetEmail(auth, email);
+    return { success: true };
   };
 
   const resetPassword = async (email: string, token: string, pass: string) => {
